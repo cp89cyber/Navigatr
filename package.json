@@ -4,7 +4,8 @@
   "description": "Extremely basic web browser with Electron",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "test": "node --test"
   },
   "devDependencies": {
     "electron": "^37.2.0"
