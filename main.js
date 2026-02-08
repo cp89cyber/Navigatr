@@ -98,6 +98,17 @@ const RELOAD_ACCELERATORS = Object.freeze({
   reload: "CommandOrControl+R",
   forceReload: "Shift+CommandOrControl+R"
 });
+const ZOOM_ACCELERATORS = Object.freeze({
+  actualSize: "CommandOrControl+0",
+  zoomIn: "CommandOrControl+Plus",
+  zoomOut: "CommandOrControl+-"
+});
+const ZOOM_DEFAULT_FACTOR = 1;
+const ZOOM_MIN_FACTOR = 0.5;
+const ZOOM_MAX_FACTOR = 3;
+const ZOOM_STEP_MULTIPLIER = 1.2;
+const ZOOM_FACTOR_PRECISION = 4;
+const ZOOM_EPSILON = 1e-6;
 const IPC_CHANNELS = Object.freeze({
   navigate: "browser:navigate",
   back: "browser:back",
@@ -136,6 +147,37 @@ function resolveTargetWindow(preferredWindow) {
 function getContextForWindow(win) {
   if (!win || win.isDestroyed()) return null;
   return windowContexts.get(win.webContents.id) || null;
+}
+
+function getLiveWindowWebContents(win) {
+  if (!win) return null;
+
+  try {
+    if (win.isDestroyed()) return null;
+    const wc = win.webContents;
+    if (!wc || wc.isDestroyed()) return null;
+    return wc;
+  } catch (error) {
+    if (String(error?.message || error).includes("Object has been destroyed")) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function getLiveViewWebContents(view) {
+  if (!view) return null;
+
+  try {
+    const wc = view.webContents;
+    if (!wc || wc.isDestroyed()) return null;
+    return wc;
+  } catch (error) {
+    if (String(error?.message || error).includes("Object has been destroyed")) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 function toggleDevToolsForWebContents(wc, mode = "detach") {
@@ -183,6 +225,74 @@ function reloadBrowserView(preferredWindow, { ignoreCache = false } = {}) {
 
   wc.reload();
   return true;
+}
+
+function roundZoomFactor(factor) {
+  const precisionMultiplier = 10 ** ZOOM_FACTOR_PRECISION;
+  return Math.round(factor * precisionMultiplier) / precisionMultiplier;
+}
+
+function clampZoomFactor(factor) {
+  if (!Number.isFinite(factor) || factor <= 0) {
+    return ZOOM_DEFAULT_FACTOR;
+  }
+
+  return roundZoomFactor(
+    Math.min(ZOOM_MAX_FACTOR, Math.max(ZOOM_MIN_FACTOR, factor))
+  );
+}
+
+function getBrowserViewWebContents(preferredWindow) {
+  const targetWindow = resolveTargetWindow(preferredWindow);
+  if (!targetWindow) return null;
+
+  const context = getContextForWindow(targetWindow);
+  if (!context) return null;
+
+  const wc = context.view?.webContents;
+  if (!wc || wc.isDestroyed()) return null;
+
+  return wc;
+}
+
+function setBrowserViewZoomFactor(preferredWindow, factor) {
+  const wc = getBrowserViewWebContents(preferredWindow);
+  if (!wc) return false;
+
+  wc.setZoomFactor(clampZoomFactor(factor));
+  return true;
+}
+
+function adjustBrowserViewZoom(preferredWindow, direction) {
+  const wc = getBrowserViewWebContents(preferredWindow);
+  if (!wc) return false;
+
+  const currentFactor = clampZoomFactor(wc.getZoomFactor());
+  let nextFactor = NaN;
+
+  if (direction === "in") {
+    nextFactor = currentFactor * ZOOM_STEP_MULTIPLIER;
+  } else if (direction === "out") {
+    nextFactor = currentFactor / ZOOM_STEP_MULTIPLIER;
+  } else {
+    return false;
+  }
+
+  wc.setZoomFactor(clampZoomFactor(nextFactor));
+  return true;
+}
+
+function lockAppUiZoom(win) {
+  if (!win || win.isDestroyed()) return;
+
+  const wc = win.webContents;
+  if (!wc || wc.isDestroyed()) return;
+
+  if (Math.abs(wc.getZoomFactor() - ZOOM_DEFAULT_FACTOR) <= ZOOM_EPSILON) {
+    return;
+  }
+
+  wc.setZoomFactor(ZOOM_DEFAULT_FACTOR);
 }
 
 function handleLegacyReloadShortcut(event, input, preferredWindow) {
@@ -233,9 +343,27 @@ function buildAppMenu() {
           click: (_menuItem, browserWindow) => toggleAppUiDevTools(browserWindow)
         },
         { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn" },
-        { role: "zoomOut" }
+        {
+          label: "Actual Size",
+          accelerator: ZOOM_ACCELERATORS.actualSize,
+          click: (_menuItem, browserWindow) => {
+            setBrowserViewZoomFactor(browserWindow, ZOOM_DEFAULT_FACTOR);
+          }
+        },
+        {
+          label: "Zoom In",
+          accelerator: ZOOM_ACCELERATORS.zoomIn,
+          click: (_menuItem, browserWindow) => {
+            adjustBrowserViewZoom(browserWindow, "in");
+          }
+        },
+        {
+          label: "Zoom Out",
+          accelerator: ZOOM_ACCELERATORS.zoomOut,
+          click: (_menuItem, browserWindow) => {
+            adjustBrowserViewZoom(browserWindow, "out");
+          }
+        }
       ]
     },
     { role: "windowMenu" },
@@ -453,34 +581,40 @@ function getContextFromEvent(event) {
 }
 
 function cleanupWindowContext(context) {
+  if (!context || context.cleanedUp) return;
+  context.cleanedUp = true;
+
   windowContexts.delete(context.rendererWebContentsId);
+  const winWebContents = getLiveWindowWebContents(context.win);
+  const viewWebContents = getLiveViewWebContents(context.view);
 
-  if (
-    typeof context.beforeInputHandler === "function" &&
-    !context.win.webContents.isDestroyed()
-  ) {
-    context.win.webContents.removeListener(
-      "before-input-event",
-      context.beforeInputHandler
-    );
+  if (typeof context.beforeInputHandler === "function" && winWebContents) {
+    winWebContents.removeListener("before-input-event", context.beforeInputHandler);
   }
 
-  if (!context.view.webContents.isDestroyed()) {
+  if (typeof context.appUiZoomLockHandler === "function" && winWebContents) {
+    winWebContents.removeListener("zoom-changed", context.appUiZoomLockHandler);
+  }
+
+  if (viewWebContents) {
     if (typeof context.beforeInputHandler === "function") {
-      context.view.webContents.removeListener(
-        "before-input-event",
-        context.beforeInputHandler
-      );
+      viewWebContents.removeListener("before-input-event", context.beforeInputHandler);
     }
-    context.view.webContents.removeAllListeners();
+    viewWebContents.removeAllListeners();
   }
 
-  if (!context.win.isDestroyed()) {
-    context.win.setBrowserView(null);
+  try {
+    if (context.win && !context.win.isDestroyed()) {
+      context.win.setBrowserView(null);
+    }
+  } catch (error) {
+    if (!String(error?.message || error).includes("Object has been destroyed")) {
+      throw error;
+    }
   }
 
-  if (!context.view.webContents.isDestroyed()) {
-    context.view.webContents.destroy();
+  if (viewWebContents) {
+    viewWebContents.destroy();
   }
 }
 
@@ -507,15 +641,25 @@ function createWindow() {
     status: "Ready",
     toolbarHeight: 48,
     rendererWebContentsId: win.webContents.id,
-    beforeInputHandler: null
+    beforeInputHandler: null,
+    appUiZoomLockHandler: null,
+    cleanedUp: false
   };
 
   context.beforeInputHandler = (event, input) => {
     handleLegacyReloadShortcut(event, input, win);
   };
+  context.appUiZoomLockHandler = (event) => {
+    if (typeof event?.preventDefault === "function") {
+      event.preventDefault();
+    }
+    lockAppUiZoom(win);
+  };
 
   windowContexts.set(context.rendererWebContentsId, context);
+  lockAppUiZoom(win);
   win.webContents.on("before-input-event", context.beforeInputHandler);
+  win.webContents.on("zoom-changed", context.appUiZoomLockHandler);
   view.webContents.on("before-input-event", context.beforeInputHandler);
   registerViewHandlers(context);
   applyViewBounds(context);
@@ -523,6 +667,7 @@ function createWindow() {
   win.loadFile(path.join(__dirname, "index.html"));
 
   win.webContents.on("did-finish-load", () => {
+    lockAppUiZoom(win);
     sendState(context);
   });
 
@@ -530,7 +675,7 @@ function createWindow() {
     applyViewBounds(context);
   });
 
-  win.on("closed", () => {
+  win.once("closed", () => {
     cleanupWindowContext(context);
   });
 
