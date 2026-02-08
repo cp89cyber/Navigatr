@@ -3,6 +3,7 @@ const {
   BrowserView,
   BrowserWindow,
   ipcMain,
+  Menu,
   session,
   shell,
   webContents
@@ -92,6 +93,7 @@ function setupAdblock() {
 
 const DEFAULT_URL = "https://example.com";
 const SEARCH_URL = "https://duckduckgo.com/?q=";
+const REPO_BASE_URL = "https://github.com/cp89cyber/Navigatr";
 const IPC_CHANNELS = Object.freeze({
   navigate: "browser:navigate",
   back: "browser:back",
@@ -108,6 +110,47 @@ const AUTHORITY_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
 const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 const INTERNAL_SCHEMES = new Set(["http", "https", "about", "blob", "data"]);
 const NON_AUTHORITY_EXTERNAL_SCHEMES = new Set(["mailto", "tel", "sms"]);
+
+function openHelpLink(targetUrl) {
+  if (!targetUrl) return;
+  void shell.openExternal(targetUrl);
+}
+
+function buildAppMenu() {
+  const template = [
+    ...(process.platform === "darwin"
+      ? [
+          {
+            label: app.name,
+            submenu: [{ role: "about" }, { type: "separator" }, { role: "quit" }]
+          }
+        ]
+      : []),
+    {
+      label: "Help",
+      submenu: [
+        {
+          label: "Learn More",
+          click: () => openHelpLink(REPO_BASE_URL)
+        },
+        {
+          label: "Documentation",
+          click: () => openHelpLink(`${REPO_BASE_URL}/blob/main/README.md`)
+        },
+        {
+          label: "Community Discussions",
+          click: () => openHelpLink(`${REPO_BASE_URL}/discussions`)
+        },
+        {
+          label: "Search Issues",
+          click: () => openHelpLink(`${REPO_BASE_URL}/issues`)
+        }
+      ]
+    }
+  ];
+
+  return Menu.buildFromTemplate(template);
+}
 
 function getScheme(targetUrl) {
   const match = SCHEME_RE.exec(targetUrl);
@@ -410,6 +453,7 @@ ipcMain.handle(IPC_CHANNELS.getState, (event) => {
 
 app.whenReady().then(() => {
   setupAdblock();
+  Menu.setApplicationMenu(buildAppMenu());
   createWindow();
 
   app.on("activate", () => {
