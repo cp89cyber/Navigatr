@@ -1,0 +1,12 @@
+{
+  "name": "navigatr",
+  "version": "0.1.0",
+  "description": "Extremely basic web browser with Electron",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^37.2.0"
+  }
+}
