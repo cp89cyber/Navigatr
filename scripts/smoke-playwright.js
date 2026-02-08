@@ -340,23 +340,43 @@ async function findRendererWindow(electronApp) {
   }, "renderer window with toolbar", 30000, 150);
 }
 
-async function getMenuFullscreenState(electronApp) {
+async function getMenuViewState(electronApp) {
   return electronApp.evaluate(({ Menu }) => {
     const menu = Menu.getApplicationMenu();
     if (!menu) {
-      return { hasToggleFullscreenRole: false, hasF11Accelerator: false };
+      return {
+        hasToggleFullscreenRole: false,
+        hasF11Accelerator: false,
+        hasGenericToggleDevToolsRole: false,
+        hasToggleDevToolsLabel: false,
+        hasToggleAppUiDevToolsLabel: false
+      };
     }
 
     const queue = [...menu.items];
     let hasToggleFullscreenRole = false;
     let hasF11Accelerator = false;
+    let hasGenericToggleDevToolsRole = false;
+    let hasToggleDevToolsLabel = false;
+    let hasToggleAppUiDevToolsLabel = false;
 
     while (queue.length > 0) {
       const item = queue.shift();
       if (!item) continue;
 
-      if (item.role === "togglefullscreen") {
+      const role = typeof item.role === "string" ? item.role.toLowerCase() : "";
+      if (role === "togglefullscreen") {
         hasToggleFullscreenRole = true;
+      }
+      if (role === "toggledevtools") {
+        hasGenericToggleDevToolsRole = true;
+      }
+
+      if (item.label === "Toggle Developer Tools") {
+        hasToggleDevToolsLabel = true;
+      }
+      if (item.label === "Toggle App UI Developer Tools") {
+        hasToggleAppUiDevToolsLabel = true;
       }
 
       const accelerator =
@@ -370,7 +390,111 @@ async function getMenuFullscreenState(electronApp) {
       }
     }
 
-    return { hasToggleFullscreenRole, hasF11Accelerator };
+    return {
+      hasToggleFullscreenRole,
+      hasF11Accelerator,
+      hasGenericToggleDevToolsRole,
+      hasToggleDevToolsLabel,
+      hasToggleAppUiDevToolsLabel
+    };
+  });
+}
+
+async function getDevToolsMenuRoutingState(electronApp) {
+  return electronApp.evaluate(({ BrowserWindow, Menu }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (!win) {
+      return { hasPrimary: false, hasSecondary: false, reason: "No BrowserWindow" };
+    }
+
+    const view = win.getBrowserView();
+    if (!view) {
+      return { hasPrimary: false, hasSecondary: false, reason: "No BrowserView" };
+    }
+
+    const menu = Menu.getApplicationMenu();
+    if (!menu) {
+      return { hasPrimary: false, hasSecondary: false, reason: "No application menu" };
+    }
+
+    const queue = [...menu.items];
+    let primaryItem = null;
+    let secondaryItem = null;
+
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (!item) continue;
+
+      if (item.label === "Toggle Developer Tools") {
+        primaryItem = item;
+      }
+      if (item.label === "Toggle App UI Developer Tools") {
+        secondaryItem = item;
+      }
+
+      if (item.submenu?.items?.length) {
+        queue.push(...item.submenu.items);
+      }
+    }
+
+    if (!primaryItem || !secondaryItem) {
+      return {
+        hasPrimary: Boolean(primaryItem),
+        hasSecondary: Boolean(secondaryItem),
+        reason: "Missing expected devtools menu items"
+      };
+    }
+
+    const calls = [];
+    const patchWebContents = (target, wc) => {
+      const original = {
+        openDevTools: wc.openDevTools,
+        closeDevTools: wc.closeDevTools,
+        isDevToolsOpened: wc.isDevToolsOpened
+      };
+
+      wc.openDevTools = (options) => {
+        calls.push({
+          target,
+          method: "openDevTools",
+          mode: options?.mode ?? null
+        });
+      };
+      wc.closeDevTools = () => {
+        calls.push({
+          target,
+          method: "closeDevTools"
+        });
+      };
+      wc.isDevToolsOpened = () => false;
+
+      return () => {
+        wc.openDevTools = original.openDevTools;
+        wc.closeDevTools = original.closeDevTools;
+        wc.isDevToolsOpened = original.isDevToolsOpened;
+      };
+    };
+
+    const restoreView = patchWebContents("view", view.webContents);
+    const restoreWindow = patchWebContents("window", win.webContents);
+
+    try {
+      primaryItem.click(undefined, win, undefined);
+      const primaryCalls = calls.splice(0);
+
+      secondaryItem.click(undefined, win, undefined);
+      const secondaryCalls = calls.splice(0);
+
+      return {
+        hasPrimary: true,
+        hasSecondary: true,
+        primaryCalls,
+        secondaryCalls
+      };
+    } finally {
+      restoreView();
+      restoreWindow();
+    }
   });
 }
 
@@ -409,18 +533,56 @@ async function run() {
     assert.strictEqual(bridgeCheck.requireType, "undefined", "window.require should be unavailable");
     log("Security invariants verified (bridge present, node integration off)");
 
-    const menuFullscreenState = await getMenuFullscreenState(electronApp);
+    const menuViewState = await getMenuViewState(electronApp);
     assert.strictEqual(
-      menuFullscreenState.hasToggleFullscreenRole,
+      menuViewState.hasToggleFullscreenRole,
       false,
       "Application menu should not include togglefullscreen role"
     );
     assert.strictEqual(
-      menuFullscreenState.hasF11Accelerator,
+      menuViewState.hasF11Accelerator,
       false,
       "Application menu should not include an F11 accelerator"
     );
-    log("Menu fullscreen controls removed (no togglefullscreen/F11)");
+    assert.strictEqual(
+      menuViewState.hasGenericToggleDevToolsRole,
+      false,
+      "Application menu should not use generic toggledevtools role"
+    );
+    assert.strictEqual(
+      menuViewState.hasToggleDevToolsLabel,
+      true,
+      "Application menu should include Toggle Developer Tools item"
+    );
+    assert.strictEqual(
+      menuViewState.hasToggleAppUiDevToolsLabel,
+      true,
+      "Application menu should include Toggle App UI Developer Tools item"
+    );
+    log("Menu view controls validated (fullscreen removed, explicit devtools items present)");
+
+    const devToolsRoutingState = await getDevToolsMenuRoutingState(electronApp);
+    assert.strictEqual(
+      devToolsRoutingState.hasPrimary,
+      true,
+      `Primary devtools menu item should exist (${devToolsRoutingState.reason || "ok"})`
+    );
+    assert.strictEqual(
+      devToolsRoutingState.hasSecondary,
+      true,
+      `Secondary app-ui devtools menu item should exist (${devToolsRoutingState.reason || "ok"})`
+    );
+    assert.deepStrictEqual(
+      devToolsRoutingState.primaryCalls,
+      [{ target: "view", method: "openDevTools", mode: "detach" }],
+      "Primary devtools menu item should target BrowserView webContents"
+    );
+    assert.deepStrictEqual(
+      devToolsRoutingState.secondaryCalls,
+      [{ target: "window", method: "openDevTools", mode: "detach" }],
+      "App UI devtools menu item should target BrowserWindow webContents"
+    );
+    log("Devtools menu routing verified (page -> BrowserView, app UI -> BrowserWindow)");
 
     await navigateWithToolbar(window, fixture.baseUrl);
     await waitForViewUrl(
