@@ -30,4 +30,7 @@ jobs:
 
       - name: Run Playwright smoke test
         timeout-minutes: 3
+        env:
+          SMOKE_FORCE_EXIT: "1"
+          SMOKE_WATCHDOG_TIMEOUT_MS: "90000"
         run: xvfb-run -a npm run smoke:playwright

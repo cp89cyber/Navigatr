@@ -168,6 +168,29 @@ function getActiveHandleNames() {
     .map((handle) => handle?.constructor?.name || "UnknownHandle");
 }
 
+function shouldForceExit() {
+  const override = process.env.SMOKE_FORCE_EXIT;
+  if (override === "1") return true;
+  if (override === "0") return false;
+  return Boolean(process.env.CI);
+}
+
+function finalizeAndExit(exitCode) {
+  const handleNames = getActiveHandleNames();
+  if (handleNames.length > 0) {
+    log(`Finalizing with exit code ${exitCode}; active handles: ${handleNames.join(", ")}`);
+  } else {
+    log(`Finalizing with exit code ${exitCode}; active handles: none`);
+  }
+
+  if (shouldForceExit()) {
+    log(`Forcing process exit (SMOKE_FORCE_EXIT=${process.env.SMOKE_FORCE_EXIT || "auto"})`);
+    process.exit(exitCode);
+  }
+
+  process.exitCode = exitCode;
+}
+
 function startWatchdog() {
   return setTimeout(() => {
     const handleNames = getActiveHandleNames();
@@ -461,14 +484,20 @@ async function run() {
 
 async function main() {
   const watchdog = startWatchdog();
+  let exitCode = 0;
+
   try {
     await run();
+  } catch (error) {
+    exitCode = 1;
+    process.stderr.write(`[smoke] FAILED: ${error?.stack || error}\n`);
   } finally {
     clearTimeout(watchdog);
+    finalizeAndExit(exitCode);
   }
 }
 
 main().catch((error) => {
-  process.stderr.write(`[smoke] FAILED: ${error?.stack || error}\n`);
-  process.exitCode = 1;
+  process.stderr.write(`[smoke] FAILED: unexpected shutdown error: ${error?.stack || error}\n`);
+  process.exit(1);
 });
