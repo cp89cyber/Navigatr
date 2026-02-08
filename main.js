@@ -1,5 +1,206 @@
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserView, BrowserWindow, ipcMain, shell } = require("electron");
 const path = require("path");
+
+const DEFAULT_URL = "https://example.com";
+const SEARCH_URL = "https://duckduckgo.com/?q=";
+const IPC_CHANNELS = Object.freeze({
+  navigate: "browser:navigate",
+  back: "browser:back",
+  forward: "browser:forward",
+  reload: "browser:reload",
+  setToolbarHeight: "browser:set-toolbar-height",
+  getState: "browser:get-state",
+  state: "browser:state"
+});
+
+const windowContexts = new Map();
+
+function normalizeInput(raw) {
+  const value = String(raw ?? "").trim();
+  if (!value) return null;
+
+  const hasProtocol = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value);
+  if (hasProtocol) return value;
+
+  const looksLikeDomain = value.includes(".") && !value.includes(" ");
+  if (looksLikeDomain) return `https://${value}`;
+
+  return `${SEARCH_URL}${encodeURIComponent(value)}`;
+}
+
+function isExternalProtocol(targetUrl) {
+  try {
+    const parsed = new URL(targetUrl);
+    return parsed.protocol !== "http:" && parsed.protocol !== "https:";
+  } catch {
+    return false;
+  }
+}
+
+function buildState(context) {
+  const wc = context.view.webContents;
+  return {
+    url: wc.getURL() || "",
+    canGoBack: canGoBack(wc),
+    canGoForward: canGoForward(wc),
+    isLoading: wc.isLoading(),
+    status: context.status,
+    title: wc.getTitle() || ""
+  };
+}
+
+function canGoBack(wc) {
+  return wc.navigationHistory?.canGoBack
+    ? wc.navigationHistory.canGoBack()
+    : wc.canGoBack();
+}
+
+function canGoForward(wc) {
+  return wc.navigationHistory?.canGoForward
+    ? wc.navigationHistory.canGoForward()
+    : wc.canGoForward();
+}
+
+function goBack(wc) {
+  if (wc.navigationHistory?.goBack) {
+    wc.navigationHistory.goBack();
+    return;
+  }
+  wc.goBack();
+}
+
+function goForward(wc) {
+  if (wc.navigationHistory?.goForward) {
+    wc.navigationHistory.goForward();
+    return;
+  }
+  wc.goForward();
+}
+
+function sendState(context) {
+  if (context.win.isDestroyed()) return;
+  context.win.webContents.send(IPC_CHANNELS.state, buildState(context));
+}
+
+function applyViewBounds(context) {
+  if (context.win.isDestroyed()) return;
+
+  const [width, height] = context.win.getContentSize();
+  const toolbarHeight = Math.max(0, Math.round(context.toolbarHeight || 0));
+  const viewHeight = Math.max(0, height - toolbarHeight);
+
+  context.view.setBounds({
+    x: 0,
+    y: toolbarHeight,
+    width: Math.max(0, width),
+    height: viewHeight
+  });
+  context.view.setAutoResize({ width: true, height: true });
+}
+
+async function openExternalUrl(context, targetUrl) {
+  try {
+    await shell.openExternal(targetUrl);
+    context.status = "Opened external link in system app";
+  } catch (error) {
+    context.status = `Error: ${error?.message || "Unable to open external link"}`;
+  }
+  sendState(context);
+}
+
+async function loadInView(context, targetUrl) {
+  try {
+    await context.view.webContents.loadURL(targetUrl);
+  } catch (error) {
+    context.status = `Error: ${error?.message || "Failed to load"}`;
+    sendState(context);
+  }
+}
+
+function navigateInput(context, rawInput) {
+  const targetUrl = normalizeInput(rawInput);
+  if (!targetUrl) return;
+
+  if (isExternalProtocol(targetUrl)) {
+    void openExternalUrl(context, targetUrl);
+    return;
+  }
+
+  void loadInView(context, targetUrl);
+}
+
+function registerViewHandlers(context) {
+  const wc = context.view.webContents;
+
+  wc.on("did-start-loading", () => {
+    context.status = "Loading...";
+    sendState(context);
+  });
+
+  wc.on("did-stop-loading", () => {
+    context.status = "Done";
+    sendState(context);
+  });
+
+  wc.on(
+    "did-fail-load",
+    (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
+      if (isMainFrame === false || errorCode === -3) return;
+      context.status = `Error: ${errorDescription || "Failed to load"}`;
+      sendState(context);
+    }
+  );
+
+  wc.on("page-title-updated", () => {
+    sendState(context);
+  });
+
+  wc.on("did-navigate", () => {
+    sendState(context);
+  });
+
+  wc.on("did-navigate-in-page", () => {
+    sendState(context);
+  });
+
+  wc.on("will-navigate", (event, targetUrl) => {
+    if (!isExternalProtocol(targetUrl)) return;
+    event.preventDefault();
+    void openExternalUrl(context, targetUrl);
+  });
+
+  wc.setWindowOpenHandler(({ url }) => {
+    if (!url) return { action: "deny" };
+
+    if (isExternalProtocol(url)) {
+      void openExternalUrl(context, url);
+      return { action: "deny" };
+    }
+
+    void loadInView(context, url);
+    return { action: "deny" };
+  });
+}
+
+function getContextFromEvent(event) {
+  return windowContexts.get(event.sender.id) || null;
+}
+
+function cleanupWindowContext(context) {
+  windowContexts.delete(context.rendererWebContentsId);
+
+  if (!context.view.webContents.isDestroyed()) {
+    context.view.webContents.removeAllListeners();
+  }
+
+  if (!context.win.isDestroyed()) {
+    context.win.setBrowserView(null);
+  }
+
+  if (!context.view.webContents.isDestroyed()) {
+    context.view.webContents.destroy();
+  }
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -8,12 +209,94 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     webPreferences: {
-      webviewTag: true
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false
     }
   });
 
+  const view = new BrowserView();
+  win.setBrowserView(view);
+
+  const context = {
+    win,
+    view,
+    status: "Ready",
+    toolbarHeight: 48,
+    rendererWebContentsId: win.webContents.id
+  };
+
+  windowContexts.set(context.rendererWebContentsId, context);
+  registerViewHandlers(context);
+  applyViewBounds(context);
+
   win.loadFile(path.join(__dirname, "index.html"));
+
+  win.webContents.on("did-finish-load", () => {
+    sendState(context);
+  });
+
+  win.on("resize", () => {
+    applyViewBounds(context);
+  });
+
+  win.on("closed", () => {
+    cleanupWindowContext(context);
+  });
+
+  void loadInView(context, DEFAULT_URL);
 }
+
+ipcMain.handle(IPC_CHANNELS.navigate, (event, rawInput) => {
+  const context = getContextFromEvent(event);
+  if (!context) return null;
+  navigateInput(context, rawInput);
+  return buildState(context);
+});
+
+ipcMain.handle(IPC_CHANNELS.back, (event) => {
+  const context = getContextFromEvent(event);
+  if (!context) return null;
+  if (canGoBack(context.view.webContents)) {
+    goBack(context.view.webContents);
+  }
+  return buildState(context);
+});
+
+ipcMain.handle(IPC_CHANNELS.forward, (event) => {
+  const context = getContextFromEvent(event);
+  if (!context) return null;
+  if (canGoForward(context.view.webContents)) {
+    goForward(context.view.webContents);
+  }
+  return buildState(context);
+});
+
+ipcMain.handle(IPC_CHANNELS.reload, (event) => {
+  const context = getContextFromEvent(event);
+  if (!context) return null;
+  context.view.webContents.reload();
+  return buildState(context);
+});
+
+ipcMain.handle(IPC_CHANNELS.setToolbarHeight, (event, px) => {
+  const context = getContextFromEvent(event);
+  if (!context) return null;
+
+  const nextHeight = Number(px);
+  if (Number.isFinite(nextHeight)) {
+    context.toolbarHeight = Math.max(0, Math.round(nextHeight));
+    applyViewBounds(context);
+  }
+
+  return buildState(context);
+});
+
+ipcMain.handle(IPC_CHANNELS.getState, (event) => {
+  const context = getContextFromEvent(event);
+  if (!context) return null;
+  return buildState(context);
+});
 
 app.whenReady().then(() => {
   createWindow();
