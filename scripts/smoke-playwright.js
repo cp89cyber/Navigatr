@@ -9,9 +9,43 @@ const electronBinary = require("electron");
 const { _electron: electron } = require("playwright");
 
 const HOST = "127.0.0.1";
+const WATCHDOG_TIMEOUT_MS = readPositiveIntEnv("SMOKE_WATCHDOG_TIMEOUT_MS", 120000);
+const ELECTRON_CLOSE_TIMEOUT_MS = readPositiveIntEnv("SMOKE_ELECTRON_CLOSE_TIMEOUT_MS", 5000);
+const ELECTRON_KILL_WAIT_TIMEOUT_MS = readPositiveIntEnv(
+  "SMOKE_ELECTRON_KILL_WAIT_TIMEOUT_MS",
+  3000
+);
+const FIXTURE_CLOSE_TIMEOUT_MS = readPositiveIntEnv("SMOKE_FIXTURE_CLOSE_TIMEOUT_MS", 4000);
+const FIXTURE_FORCE_CLOSE_TIMEOUT_MS = readPositiveIntEnv(
+  "SMOKE_FIXTURE_FORCE_CLOSE_TIMEOUT_MS",
+  2000
+);
+
+function readPositiveIntEnv(name, fallbackMs) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : fallbackMs;
+}
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timeoutId;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(`Timed out after ${timeoutMs}ms: ${label}`));
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 async function waitForCondition(check, label, timeoutMs = 10000, intervalMs = 100) {
@@ -27,6 +61,7 @@ async function waitForCondition(check, label, timeoutMs = 10000, intervalMs = 10
 }
 
 async function startFixtureServer() {
+  const sockets = new Set();
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || "/", `http://${HOST}`);
 
@@ -68,6 +103,13 @@ async function startFixtureServer() {
     res.end("Not found");
   });
 
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => {
+      sockets.delete(socket);
+    });
+  });
+
   await new Promise((resolve, reject) => {
     server.listen(0, HOST, (error) => {
       if (error) {
@@ -85,15 +127,128 @@ async function startFixtureServer() {
 
   return {
     server,
+    sockets,
     baseUrl: `http://${HOST}:${address.port}`
   };
 }
 
-async function stopFixtureServer(server) {
+async function stopFixtureServer(server, sockets = new Set()) {
   if (!server) return;
-  await new Promise((resolve) => {
+  const closePromise = new Promise((resolve) => {
     server.close(() => resolve());
   });
+
+  try {
+    await withTimeout(closePromise, FIXTURE_CLOSE_TIMEOUT_MS, "fixture server close");
+    log("Fixture server closed");
+    return;
+  } catch (error) {
+    log(`${error.message}; destroying lingering fixture sockets (${sockets.size})`);
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+  }
+
+  try {
+    await withTimeout(
+      closePromise,
+      FIXTURE_FORCE_CLOSE_TIMEOUT_MS,
+      "fixture server forced close"
+    );
+    log("Fixture server closed after destroying lingering sockets");
+  } catch (error) {
+    log(`${error.message}; continuing teardown`);
+  }
+}
+
+function getActiveHandleNames() {
+  if (typeof process._getActiveHandles !== "function") return [];
+  return process
+    ._getActiveHandles()
+    .map((handle) => handle?.constructor?.name || "UnknownHandle");
+}
+
+function startWatchdog() {
+  return setTimeout(() => {
+    const handleNames = getActiveHandleNames();
+    process.stderr.write(
+      `[smoke] FAILED: global watchdog timed out after ${WATCHDOG_TIMEOUT_MS}ms\n`
+    );
+    if (handleNames.length > 0) {
+      process.stderr.write(`[smoke] Active handles: ${handleNames.join(", ")}\n`);
+    }
+    process.exit(1);
+  }, WATCHDOG_TIMEOUT_MS);
+}
+
+async function waitForProcessExit(childProcess, timeoutMs) {
+  if (!childProcess || childProcess.exitCode !== null || childProcess.killed) return;
+
+  await withTimeout(
+    new Promise((resolve) => {
+      const onExit = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = () => {
+        cleanup();
+        resolve();
+      };
+      const cleanup = () => {
+        childProcess.off("exit", onExit);
+        childProcess.off("error", onError);
+      };
+
+      childProcess.on("exit", onExit);
+      childProcess.on("error", onError);
+    }),
+    timeoutMs,
+    "electron process exit"
+  );
+}
+
+async function closeElectronApp(electronApp) {
+  if (!electronApp) return;
+
+  let electronProcess = null;
+  try {
+    electronProcess = electronApp.process();
+  } catch {
+    // Best effort: fall through to close() timeout handling.
+  }
+
+  try {
+    await withTimeout(electronApp.close(), ELECTRON_CLOSE_TIMEOUT_MS, "electronApp.close()");
+    log("Electron app closed gracefully");
+    return;
+  } catch (error) {
+    log(`${error.message}; attempting SIGKILL fallback`);
+  }
+
+  if (!electronProcess) {
+    log("Electron process handle unavailable; skipping force kill");
+    return;
+  }
+
+  if (electronProcess.exitCode !== null || electronProcess.killed) {
+    log("Electron process already exited");
+    return;
+  }
+
+  try {
+    electronProcess.kill("SIGKILL");
+    log("Sent SIGKILL to Electron process");
+  } catch (error) {
+    log(`Failed to SIGKILL Electron process: ${error?.message || error}`);
+    return;
+  }
+
+  try {
+    await waitForProcessExit(electronProcess, ELECTRON_KILL_WAIT_TIMEOUT_MS);
+    log("Electron process exited after SIGKILL");
+  } catch (error) {
+    log(`${error.message}; continuing teardown`);
+  }
 }
 
 async function getViewState(electronApp) {
@@ -289,16 +444,31 @@ async function run() {
 
     log("All smoke checks passed");
   } finally {
+    log("Starting teardown");
     if (electronApp) {
-      await electronApp.close().catch(() => {});
+      await closeElectronApp(electronApp).catch((error) => {
+        log(`Error during Electron teardown: ${error?.message || error}`);
+      });
     }
     if (fixture?.server) {
-      await stopFixtureServer(fixture.server);
+      await stopFixtureServer(fixture.server, fixture.sockets).catch((error) => {
+        log(`Error during fixture server teardown: ${error?.message || error}`);
+      });
     }
+    log("Teardown complete");
   }
 }
 
-run().catch((error) => {
+async function main() {
+  const watchdog = startWatchdog();
+  try {
+    await run();
+  } finally {
+    clearTimeout(watchdog);
+  }
+}
+
+main().catch((error) => {
   process.stderr.write(`[smoke] FAILED: ${error?.stack || error}\n`);
   process.exitCode = 1;
 });
