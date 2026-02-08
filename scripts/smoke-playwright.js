@@ -498,6 +498,154 @@ async function getDevToolsMenuRoutingState(electronApp) {
   });
 }
 
+function normalizeAcceleratorTokens(accelerator) {
+  const commandOrControlToken = process.platform === "darwin" ? "command" : "control";
+
+  return String(accelerator || "")
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .split("+")
+    .filter(Boolean)
+    .map((token) => {
+      if (token === "cmd") return "command";
+      if (token === "ctrl") return "control";
+      if (token === "commandorcontrol") return commandOrControlToken;
+      return token;
+    })
+    .sort()
+    .join("+");
+}
+
+async function getReloadMenuRoutingState(electronApp) {
+  return electronApp.evaluate(({ BrowserWindow, Menu }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (!win) {
+      return { hasReload: false, hasForceReload: false, reason: "No BrowserWindow" };
+    }
+
+    const view = win.getBrowserView();
+    if (!view) {
+      return { hasReload: false, hasForceReload: false, reason: "No BrowserView" };
+    }
+
+    const menu = Menu.getApplicationMenu();
+    if (!menu) {
+      return { hasReload: false, hasForceReload: false, reason: "No application menu" };
+    }
+
+    const queue = [...menu.items];
+    let reloadItem = null;
+    let forceReloadItem = null;
+
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (!item) continue;
+
+      if (item.label === "Reload") {
+        reloadItem = item;
+      }
+      if (item.label === "Force Reload") {
+        forceReloadItem = item;
+      }
+
+      if (item.submenu?.items?.length) {
+        queue.push(...item.submenu.items);
+      }
+    }
+
+    if (!reloadItem || !forceReloadItem) {
+      return {
+        hasReload: Boolean(reloadItem),
+        hasForceReload: Boolean(forceReloadItem),
+        reason: "Missing expected reload menu items"
+      };
+    }
+
+    const calls = [];
+    const patchWebContents = (target, wc) => {
+      const original = {
+        reload: wc.reload,
+        reloadIgnoringCache: wc.reloadIgnoringCache
+      };
+
+      wc.reload = () => {
+        calls.push({ target, method: "reload" });
+      };
+      wc.reloadIgnoringCache = () => {
+        calls.push({ target, method: "reloadIgnoringCache" });
+      };
+
+      return () => {
+        wc.reload = original.reload;
+        wc.reloadIgnoringCache = original.reloadIgnoringCache;
+      };
+    };
+
+    const runShortcutProbe = (input) => {
+      const syntheticEvent = {
+        defaultPrevented: false,
+        preventDefault() {
+          this.defaultPrevented = true;
+        }
+      };
+
+      win.webContents.emit("before-input-event", syntheticEvent, input);
+      return {
+        prevented: Boolean(syntheticEvent.defaultPrevented),
+        calls: calls.splice(0)
+      };
+    };
+
+    const restoreView = patchWebContents("view", view.webContents);
+    const restoreWindow = patchWebContents("window", win.webContents);
+
+    try {
+      reloadItem.click(undefined, win, undefined);
+      const reloadCalls = calls.splice(0);
+
+      forceReloadItem.click(undefined, win, undefined);
+      const forceReloadCalls = calls.splice(0);
+
+      const legacyShortcutRouting =
+        process.platform === "darwin"
+          ? null
+          : {
+              f5: runShortcutProbe({
+                type: "keyDown",
+                key: "F5",
+                control: false,
+                shift: false,
+                alt: false,
+                meta: false
+              }),
+              ctrlF5: runShortcutProbe({
+                type: "keyDown",
+                key: "F5",
+                control: true,
+                shift: false,
+                alt: false,
+                meta: false
+              })
+            };
+
+      return {
+        hasReload: true,
+        hasForceReload: true,
+        reloadAccelerator:
+          typeof reloadItem.accelerator === "string" ? reloadItem.accelerator : "",
+        forceReloadAccelerator:
+          typeof forceReloadItem.accelerator === "string" ? forceReloadItem.accelerator : "",
+        reloadCalls,
+        forceReloadCalls,
+        legacyShortcutRouting
+      };
+    } finally {
+      restoreView();
+      restoreWindow();
+    }
+  });
+}
+
 async function run() {
   let fixture = null;
   let electronApp = null;
@@ -583,6 +731,62 @@ async function run() {
       "App UI devtools menu item should target BrowserWindow webContents"
     );
     log("Devtools menu routing verified (page -> BrowserView, app UI -> BrowserWindow)");
+
+    const reloadRoutingState = await getReloadMenuRoutingState(electronApp);
+    assert.strictEqual(
+      reloadRoutingState.hasReload,
+      true,
+      `Reload menu item should exist (${reloadRoutingState.reason || "ok"})`
+    );
+    assert.strictEqual(
+      reloadRoutingState.hasForceReload,
+      true,
+      `Force Reload menu item should exist (${reloadRoutingState.reason || "ok"})`
+    );
+    assert.strictEqual(
+      normalizeAcceleratorTokens(reloadRoutingState.reloadAccelerator),
+      process.platform === "darwin" ? "command+r" : "control+r",
+      "Reload menu item should expose Cmd/Ctrl+R accelerator"
+    );
+    assert.strictEqual(
+      normalizeAcceleratorTokens(reloadRoutingState.forceReloadAccelerator),
+      process.platform === "darwin" ? "command+r+shift" : "control+r+shift",
+      "Force Reload menu item should expose Shift+Cmd/Ctrl+R accelerator"
+    );
+    assert.deepStrictEqual(
+      reloadRoutingState.reloadCalls,
+      [{ target: "view", method: "reload" }],
+      "Reload menu item should target BrowserView webContents.reload()"
+    );
+    assert.deepStrictEqual(
+      reloadRoutingState.forceReloadCalls,
+      [{ target: "view", method: "reloadIgnoringCache" }],
+      "Force Reload menu item should target BrowserView webContents.reloadIgnoringCache()"
+    );
+
+    if (process.platform !== "darwin") {
+      assert.strictEqual(
+        reloadRoutingState.legacyShortcutRouting?.f5?.prevented,
+        true,
+        "F5 should be handled as BrowserView reload shortcut"
+      );
+      assert.strictEqual(
+        reloadRoutingState.legacyShortcutRouting?.ctrlF5?.prevented,
+        true,
+        "Ctrl+F5 should be handled as BrowserView force reload shortcut"
+      );
+      assert.deepStrictEqual(
+        reloadRoutingState.legacyShortcutRouting?.f5?.calls,
+        [{ target: "view", method: "reload" }],
+        "F5 shortcut should target BrowserView webContents.reload()"
+      );
+      assert.deepStrictEqual(
+        reloadRoutingState.legacyShortcutRouting?.ctrlF5?.calls,
+        [{ target: "view", method: "reloadIgnoringCache" }],
+        "Ctrl+F5 shortcut should target BrowserView webContents.reloadIgnoringCache()"
+      );
+    }
+    log("Reload menu routing verified (menu items and shortcuts target BrowserView)");
 
     await navigateWithToolbar(window, fixture.baseUrl);
     await waitForViewUrl(
