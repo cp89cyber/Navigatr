@@ -5,35 +5,78 @@ const urlInput = document.getElementById("url");
 const adblockToggle = document.getElementById("adblock-toggle");
 const blockedCount = document.getElementById("blocked-count");
 const statusEl = document.getElementById("status");
-const webview = document.getElementById("webview");
+const toolbarEl = document.getElementById("toolbar");
+
+const browserBridge = window.browser;
+let unsubscribeState = null;
 let unsubscribeAdblock = null;
+let resizeTimer = null;
 
-function normalizeInput(raw) {
-  const value = raw.trim();
-  if (!value) return null;
-
-  const hasProtocol = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value);
-  if (hasProtocol) return value;
-
-  const looksLikeDomain = value.includes(".") && !value.includes(" ");
-  if (looksLikeDomain) return `https://${value}`;
-
-  return `https://duckduckgo.com/?q=${encodeURIComponent(value)}`;
+function setControlsEnabled(enabled) {
+  backBtn.disabled = !enabled;
+  forwardBtn.disabled = !enabled;
+  reloadBtn.disabled = !enabled;
+  urlInput.disabled = !enabled;
 }
 
-function navigate(raw) {
-  const next = normalizeInput(raw);
-  if (!next) return;
-  webview.loadURL(next);
+function setStatus(text) {
+  statusEl.textContent = text;
 }
 
-function updateNavState() {
-  backBtn.disabled = !webview.canGoBack();
-  forwardBtn.disabled = !webview.canGoForward();
+function applyState(state) {
+  if (!state) return;
+
+  backBtn.disabled = !state.canGoBack;
+  forwardBtn.disabled = !state.canGoForward;
+  setStatus(state.status || (state.isLoading ? "Loading..." : "Ready"));
+
+  if (state.url) {
+    urlInput.value = state.url;
+  }
+
+  document.title = state.title ? `${state.title} - Navigatr` : "Navigatr";
+}
+
+function showBridgeError(error) {
+  setStatus(`Error: ${error?.message || "Browser bridge unavailable"}`);
+}
+
+async function syncToolbarHeight() {
+  if (!browserBridge || !toolbarEl) return;
+  const height = Math.ceil(toolbarEl.getBoundingClientRect().height);
+
+  try {
+    await browserBridge.setToolbarHeight(height);
+  } catch (error) {
+    showBridgeError(error);
+  }
+}
+
+function syncToolbarHeightSoon() {
+  if (resizeTimer) {
+    clearTimeout(resizeTimer);
+  }
+
+  resizeTimer = setTimeout(() => {
+    resizeTimer = null;
+    void syncToolbarHeight();
+  }, 50);
+}
+
+async function refreshState() {
+  if (!browserBridge) return;
+
+  try {
+    const state = await browserBridge.getState();
+    applyState(state);
+  } catch (error) {
+    showBridgeError(error);
+  }
 }
 
 function applyAdblockState(state) {
   if (!state || typeof state !== "object") return;
+  if (!adblockToggle || !blockedCount) return;
 
   if (typeof state.enabled === "boolean") {
     adblockToggle.checked = state.enabled;
@@ -45,6 +88,8 @@ function applyAdblockState(state) {
 }
 
 async function initAdblockControls() {
+  if (!adblockToggle || !blockedCount) return;
+
   if (!window.adblock) {
     adblockToggle.disabled = true;
     blockedCount.textContent = "Blocked: n/a";
@@ -54,7 +99,7 @@ async function initAdblockControls() {
   try {
     applyAdblockState(await window.adblock.getState());
   } catch (_err) {
-    statusEl.textContent = "Ad blocker unavailable";
+    setStatus("Ad blocker unavailable");
   }
 
   adblockToggle.addEventListener("change", async () => {
@@ -66,7 +111,7 @@ async function initAdblockControls() {
       applyAdblockState(state);
     } catch (_err) {
       adblockToggle.checked = !desiredState;
-      statusEl.textContent = "Could not update ad blocker";
+      setStatus("Could not update ad blocker");
     } finally {
       adblockToggle.disabled = false;
     }
@@ -78,46 +123,61 @@ async function initAdblockControls() {
 }
 
 backBtn.addEventListener("click", () => {
-  if (webview.canGoBack()) webview.goBack();
+  if (!browserBridge) return;
+  browserBridge.back().catch(showBridgeError);
 });
 
 forwardBtn.addEventListener("click", () => {
-  if (webview.canGoForward()) webview.goForward();
+  if (!browserBridge) return;
+  browserBridge.forward().catch(showBridgeError);
 });
 
 reloadBtn.addEventListener("click", () => {
-  webview.reload();
+  if (!browserBridge) return;
+  browserBridge.reload().catch(showBridgeError);
 });
 
 urlInput.addEventListener("keydown", (event) => {
+  if (!browserBridge) return;
   if (event.key === "Enter") {
-    navigate(urlInput.value);
+    browserBridge.navigate(urlInput.value).catch(showBridgeError);
   }
 });
 
-webview.addEventListener("did-start-loading", () => {
-  statusEl.textContent = "Loading...";
-  updateNavState();
-});
-
-webview.addEventListener("did-stop-loading", () => {
-  statusEl.textContent = "Done";
-  urlInput.value = webview.getURL();
-  updateNavState();
-});
-
-webview.addEventListener("did-fail-load", (event) => {
-  statusEl.textContent = `Error: ${event.errorDescription || "Failed to load"}`;
-});
-
-window.addEventListener("DOMContentLoaded", () => {
-  urlInput.value = webview.getURL();
-  updateNavState();
-  initAdblockControls();
+window.addEventListener("resize", () => {
+  syncToolbarHeightSoon();
 });
 
 window.addEventListener("beforeunload", () => {
+  if (typeof unsubscribeState === "function") {
+    unsubscribeState();
+  }
+
   if (typeof unsubscribeAdblock === "function") {
     unsubscribeAdblock();
   }
+
+  if (resizeTimer) {
+    clearTimeout(resizeTimer);
+    resizeTimer = null;
+  }
+});
+
+window.addEventListener("DOMContentLoaded", () => {
+  void initAdblockControls();
+
+  if (!browserBridge) {
+    setControlsEnabled(false);
+    setStatus("Error: Browser bridge unavailable");
+    return;
+  }
+
+  setControlsEnabled(true);
+
+  unsubscribeState = browserBridge.onStateChange((state) => {
+    applyState(state);
+  });
+
+  void refreshState();
+  void syncToolbarHeight();
 });
