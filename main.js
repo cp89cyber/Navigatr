@@ -121,7 +121,18 @@ function buildAppMenu() {
     ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
     { role: "fileMenu" },
     { role: "editMenu" },
-    { role: "viewMenu" },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "forceReload" },
+        { role: "toggleDevTools" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" }
+      ]
+    },
     { role: "windowMenu" },
     {
       label: "Help",
