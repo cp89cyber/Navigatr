@@ -340,6 +340,40 @@ async function findRendererWindow(electronApp) {
   }, "renderer window with toolbar", 30000, 150);
 }
 
+async function getMenuFullscreenState(electronApp) {
+  return electronApp.evaluate(({ Menu }) => {
+    const menu = Menu.getApplicationMenu();
+    if (!menu) {
+      return { hasToggleFullscreenRole: false, hasF11Accelerator: false };
+    }
+
+    const queue = [...menu.items];
+    let hasToggleFullscreenRole = false;
+    let hasF11Accelerator = false;
+
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (!item) continue;
+
+      if (item.role === "togglefullscreen") {
+        hasToggleFullscreenRole = true;
+      }
+
+      const accelerator =
+        typeof item.accelerator === "string" ? item.accelerator.toLowerCase() : "";
+      if (accelerator.split("+").includes("f11")) {
+        hasF11Accelerator = true;
+      }
+
+      if (item.submenu?.items?.length) {
+        queue.push(...item.submenu.items);
+      }
+    }
+
+    return { hasToggleFullscreenRole, hasF11Accelerator };
+  });
+}
+
 async function run() {
   let fixture = null;
   let electronApp = null;
@@ -374,6 +408,19 @@ async function run() {
     assert.strictEqual(bridgeCheck.hasBridge, true, "window.browser bridge should exist");
     assert.strictEqual(bridgeCheck.requireType, "undefined", "window.require should be unavailable");
     log("Security invariants verified (bridge present, node integration off)");
+
+    const menuFullscreenState = await getMenuFullscreenState(electronApp);
+    assert.strictEqual(
+      menuFullscreenState.hasToggleFullscreenRole,
+      false,
+      "Application menu should not include togglefullscreen role"
+    );
+    assert.strictEqual(
+      menuFullscreenState.hasF11Accelerator,
+      false,
+      "Application menu should not include an F11 accelerator"
+    );
+    log("Menu fullscreen controls removed (no togglefullscreen/F11)");
 
     await navigateWithToolbar(window, fixture.baseUrl);
     await waitForViewUrl(
