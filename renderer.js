@@ -2,11 +2,14 @@ const backBtn = document.getElementById("back");
 const forwardBtn = document.getElementById("forward");
 const reloadBtn = document.getElementById("reload");
 const urlInput = document.getElementById("url");
+const adblockToggle = document.getElementById("adblock-toggle");
+const blockedCount = document.getElementById("blocked-count");
 const statusEl = document.getElementById("status");
 const toolbarEl = document.getElementById("toolbar");
 
 const browserBridge = window.browser;
 let unsubscribeState = null;
+let unsubscribeAdblock = null;
 let resizeTimer = null;
 
 function setControlsEnabled(enabled) {
@@ -71,6 +74,54 @@ async function refreshState() {
   }
 }
 
+function applyAdblockState(state) {
+  if (!state || typeof state !== "object") return;
+  if (!adblockToggle || !blockedCount) return;
+
+  if (typeof state.enabled === "boolean") {
+    adblockToggle.checked = state.enabled;
+  }
+
+  if (typeof state.blockedTotal === "number") {
+    blockedCount.textContent = `Blocked: ${state.blockedTotal}`;
+  }
+}
+
+async function initAdblockControls() {
+  if (!adblockToggle || !blockedCount) return;
+
+  if (!window.adblock) {
+    adblockToggle.disabled = true;
+    blockedCount.textContent = "Blocked: n/a";
+    return;
+  }
+
+  try {
+    applyAdblockState(await window.adblock.getState());
+  } catch (_err) {
+    setStatus("Ad blocker unavailable");
+  }
+
+  adblockToggle.addEventListener("change", async () => {
+    const desiredState = adblockToggle.checked;
+    adblockToggle.disabled = true;
+
+    try {
+      const state = await window.adblock.setEnabled(desiredState);
+      applyAdblockState(state);
+    } catch (_err) {
+      adblockToggle.checked = !desiredState;
+      setStatus("Could not update ad blocker");
+    } finally {
+      adblockToggle.disabled = false;
+    }
+  });
+
+  unsubscribeAdblock = window.adblock.onStats((state) => {
+    applyAdblockState(state);
+  });
+}
+
 backBtn.addEventListener("click", () => {
   if (!browserBridge) return;
   browserBridge.back().catch(showBridgeError);
@@ -102,6 +153,10 @@ window.addEventListener("beforeunload", () => {
     unsubscribeState();
   }
 
+  if (typeof unsubscribeAdblock === "function") {
+    unsubscribeAdblock();
+  }
+
   if (resizeTimer) {
     clearTimeout(resizeTimer);
     resizeTimer = null;
@@ -109,6 +164,8 @@ window.addEventListener("beforeunload", () => {
 });
 
 window.addEventListener("DOMContentLoaded", () => {
+  void initAdblockControls();
+
   if (!browserBridge) {
     setControlsEnabled(false);
     setStatus("Error: Browser bridge unavailable");
