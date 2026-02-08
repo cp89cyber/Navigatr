@@ -94,6 +94,10 @@ function setupAdblock() {
 const DEFAULT_URL = "https://example.com";
 const SEARCH_URL = "https://duckduckgo.com/?q=";
 const REPO_BASE_URL = "https://github.com/cp89cyber/Navigatr";
+const RELOAD_ACCELERATORS = Object.freeze({
+  reload: "CommandOrControl+R",
+  forceReload: "Shift+CommandOrControl+R"
+});
 const IPC_CHANNELS = Object.freeze({
   navigate: "browser:navigate",
   back: "browser:back",
@@ -162,6 +166,40 @@ function toggleAppUiDevTools(preferredWindow) {
   toggleDevToolsForWebContents(targetWindow.webContents);
 }
 
+function reloadBrowserView(preferredWindow, { ignoreCache = false } = {}) {
+  const targetWindow = resolveTargetWindow(preferredWindow);
+  if (!targetWindow) return false;
+
+  const context = getContextForWindow(targetWindow);
+  if (!context) return false;
+
+  const wc = context.view?.webContents;
+  if (!wc || wc.isDestroyed()) return false;
+
+  if (ignoreCache && typeof wc.reloadIgnoringCache === "function") {
+    wc.reloadIgnoringCache();
+    return true;
+  }
+
+  wc.reload();
+  return true;
+}
+
+function handleLegacyReloadShortcut(event, input, preferredWindow) {
+  if (process.platform === "darwin") return false;
+  if (!input || input.type !== "keyDown") return false;
+
+  const key = typeof input.key === "string" ? input.key.toLowerCase() : "";
+  if (key !== "f5") return false;
+
+  if (input.alt || input.meta || input.shift) {
+    return false;
+  }
+
+  event.preventDefault();
+  return reloadBrowserView(preferredWindow, { ignoreCache: Boolean(input.control) });
+}
+
 function buildAppMenu() {
   const template = [
     ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
@@ -170,8 +208,20 @@ function buildAppMenu() {
     {
       label: "View",
       submenu: [
-        { role: "reload" },
-        { role: "forceReload" },
+        {
+          label: "Reload",
+          accelerator: RELOAD_ACCELERATORS.reload,
+          click: (_menuItem, browserWindow) => {
+            reloadBrowserView(browserWindow, { ignoreCache: false });
+          }
+        },
+        {
+          label: "Force Reload",
+          accelerator: RELOAD_ACCELERATORS.forceReload,
+          click: (_menuItem, browserWindow) => {
+            reloadBrowserView(browserWindow, { ignoreCache: true });
+          }
+        },
         {
           label: "Toggle Developer Tools",
           accelerator:
@@ -405,7 +455,23 @@ function getContextFromEvent(event) {
 function cleanupWindowContext(context) {
   windowContexts.delete(context.rendererWebContentsId);
 
+  if (
+    typeof context.beforeInputHandler === "function" &&
+    !context.win.webContents.isDestroyed()
+  ) {
+    context.win.webContents.removeListener(
+      "before-input-event",
+      context.beforeInputHandler
+    );
+  }
+
   if (!context.view.webContents.isDestroyed()) {
+    if (typeof context.beforeInputHandler === "function") {
+      context.view.webContents.removeListener(
+        "before-input-event",
+        context.beforeInputHandler
+      );
+    }
     context.view.webContents.removeAllListeners();
   }
 
@@ -440,10 +506,17 @@ function createWindow() {
     view,
     status: "Ready",
     toolbarHeight: 48,
-    rendererWebContentsId: win.webContents.id
+    rendererWebContentsId: win.webContents.id,
+    beforeInputHandler: null
+  };
+
+  context.beforeInputHandler = (event, input) => {
+    handleLegacyReloadShortcut(event, input, win);
   };
 
   windowContexts.set(context.rendererWebContentsId, context);
+  win.webContents.on("before-input-event", context.beforeInputHandler);
+  view.webContents.on("before-input-event", context.beforeInputHandler);
   registerViewHandlers(context);
   applyViewBounds(context);
 
@@ -492,7 +565,7 @@ ipcMain.handle(IPC_CHANNELS.forward, (event) => {
 ipcMain.handle(IPC_CHANNELS.reload, (event) => {
   const context = getContextFromEvent(event);
   if (!context) return null;
-  context.view.webContents.reload();
+  reloadBrowserView(context.win, { ignoreCache: false });
   return buildState(context);
 });
 
