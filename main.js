@@ -118,14 +118,11 @@ function openHelpLink(targetUrl) {
 
 function buildAppMenu() {
   const template = [
-    ...(process.platform === "darwin"
-      ? [
-          {
-            label: app.name,
-            submenu: [{ role: "about" }, { type: "separator" }, { role: "quit" }]
-          }
-        ]
-      : []),
+    ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
+    { role: "fileMenu" },
+    { role: "editMenu" },
+    { role: "viewMenu" },
+    { role: "windowMenu" },
     {
       label: "Help",
       submenu: [
