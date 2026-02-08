@@ -199,6 +199,18 @@ async function run() {
     await waitForStatus(window, (text) => text === "Done", "ready status after initial navigation");
     log("Initial navigation succeeded");
 
+    const fixtureUrl = new URL(fixture.baseUrl);
+    const localhostShorthand = `localhost:${fixtureUrl.port}`;
+    const localhostUrl = `http://${localhostShorthand}`;
+    await navigateWithToolbar(window, localhostShorthand);
+    await waitForViewUrl(
+      electronApp,
+      (url) => url === `${localhostUrl}/` || url === localhostUrl,
+      "localhost host:port shorthand navigation"
+    );
+    await waitForStatus(window, (text) => text === "Done", "ready status after localhost shorthand");
+    log("Localhost host:port shorthand navigation passed");
+
     await navigateWithToolbar(window, `${fixture.baseUrl}/second`);
     await waitForViewUrl(
       electronApp,
@@ -212,8 +224,8 @@ async function run() {
     await window.click("#back");
     await waitForViewUrl(
       electronApp,
-      (url) => url === `${fixture.baseUrl}/` || url === fixture.baseUrl,
-      "back navigation to /"
+      (url) => url === `${localhostUrl}/` || url === localhostUrl,
+      "back navigation to localhost shorthand page"
     );
 
     const forwardDisabledAfterBack = await window.isDisabled("#forward");

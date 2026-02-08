@@ -14,6 +14,7 @@ const {
   isSameSite
 } = require("./adblock/matcher");
 const { loadSettings, saveSettings } = require("./adblock/settings");
+const { normalizeInput } = require("./url-input");
 
 const adblockState = {
   enabled: true,
@@ -102,19 +103,6 @@ const IPC_CHANNELS = Object.freeze({
 });
 
 const windowContexts = new Map();
-
-function normalizeInput(raw) {
-  const value = String(raw ?? "").trim();
-  if (!value) return null;
-
-  const hasProtocol = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value);
-  if (hasProtocol) return value;
-
-  const looksLikeDomain = value.includes(".") && !value.includes(" ");
-  if (looksLikeDomain) return `https://${value}`;
-
-  return `${SEARCH_URL}${encodeURIComponent(value)}`;
-}
 
 function isExternalProtocol(targetUrl) {
   try {
@@ -206,7 +194,7 @@ async function loadInView(context, targetUrl) {
 }
 
 function navigateInput(context, rawInput) {
-  const targetUrl = normalizeInput(rawInput);
+  const targetUrl = normalizeInput(rawInput, { searchUrl: SEARCH_URL });
   if (!targetUrl) return;
 
   if (isExternalProtocol(targetUrl)) {
