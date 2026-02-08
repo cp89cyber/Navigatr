@@ -116,6 +116,52 @@ function openHelpLink(targetUrl) {
   void shell.openExternal(targetUrl);
 }
 
+function resolveTargetWindow(preferredWindow) {
+  if (preferredWindow && !preferredWindow.isDestroyed()) {
+    return preferredWindow;
+  }
+
+  const focusedWindow = BrowserWindow.getFocusedWindow();
+  if (focusedWindow && !focusedWindow.isDestroyed()) {
+    return focusedWindow;
+  }
+
+  return BrowserWindow.getAllWindows().find((win) => !win.isDestroyed()) || null;
+}
+
+function getContextForWindow(win) {
+  if (!win || win.isDestroyed()) return null;
+  return windowContexts.get(win.webContents.id) || null;
+}
+
+function toggleDevToolsForWebContents(wc, mode = "detach") {
+  if (!wc || wc.isDestroyed()) return;
+
+  if (wc.isDevToolsOpened()) {
+    wc.closeDevTools();
+    return;
+  }
+
+  wc.openDevTools({ mode });
+}
+
+function togglePageDevTools(preferredWindow) {
+  const targetWindow = resolveTargetWindow(preferredWindow);
+  if (!targetWindow) return;
+
+  const context = getContextForWindow(targetWindow);
+  if (!context) return;
+
+  toggleDevToolsForWebContents(context.view?.webContents);
+}
+
+function toggleAppUiDevTools(preferredWindow) {
+  const targetWindow = resolveTargetWindow(preferredWindow);
+  if (!targetWindow) return;
+
+  toggleDevToolsForWebContents(targetWindow.webContents);
+}
+
 function buildAppMenu() {
   const template = [
     ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
@@ -126,7 +172,16 @@ function buildAppMenu() {
       submenu: [
         { role: "reload" },
         { role: "forceReload" },
-        { role: "toggleDevTools" },
+        {
+          label: "Toggle Developer Tools",
+          accelerator:
+            process.platform === "darwin" ? "Alt+Command+I" : "Ctrl+Shift+I",
+          click: (_menuItem, browserWindow) => togglePageDevTools(browserWindow)
+        },
+        {
+          label: "Toggle App UI Developer Tools",
+          click: (_menuItem, browserWindow) => toggleAppUiDevTools(browserWindow)
+        },
         { type: "separator" },
         { role: "resetZoom" },
         { role: "zoomIn" },
