@@ -104,10 +104,38 @@ const IPC_CHANNELS = Object.freeze({
 
 const windowContexts = new Map();
 
+const AUTHORITY_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
+const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
+const INTERNAL_SCHEMES = new Set(["http", "https", "about", "blob", "data"]);
+const NON_AUTHORITY_EXTERNAL_SCHEMES = new Set(["mailto", "tel", "sms"]);
+
+function getScheme(targetUrl) {
+  const match = SCHEME_RE.exec(targetUrl);
+  return match ? match[0].slice(0, -1).toLowerCase() : null;
+}
+
 function isExternalProtocol(targetUrl) {
+  const scheme = getScheme(targetUrl);
+  if (!scheme) return false;
+  if (INTERNAL_SCHEMES.has(scheme)) return false;
+  if (AUTHORITY_SCHEME_RE.test(targetUrl)) return true;
+  return NON_AUTHORITY_EXTERNAL_SCHEMES.has(scheme);
+}
+
+function allowInPageNavigation(context, targetUrl) {
+  const scheme = getScheme(targetUrl);
+  if (!scheme) return false;
+  if (scheme === "about" || scheme === "data") return true;
+  if (scheme !== "blob") return false;
+
   try {
-    const parsed = new URL(targetUrl);
-    return parsed.protocol !== "http:" && parsed.protocol !== "https:";
+    const targetOrigin = new URL(targetUrl).origin;
+    const currentOrigin = new URL(context.view.webContents.getURL()).origin;
+    return (
+      targetOrigin !== "null" &&
+      currentOrigin !== "null" &&
+      targetOrigin === currentOrigin
+    );
   } catch {
     return false;
   }
@@ -240,6 +268,7 @@ function registerViewHandlers(context) {
   });
 
   wc.on("will-navigate", (event, targetUrl) => {
+    if (allowInPageNavigation(context, targetUrl)) return;
     if (!isExternalProtocol(targetUrl)) return;
     event.preventDefault();
     void openExternalUrl(context, targetUrl);
@@ -247,6 +276,11 @@ function registerViewHandlers(context) {
 
   wc.setWindowOpenHandler(({ url }) => {
     if (!url) return { action: "deny" };
+
+    if (allowInPageNavigation(context, url)) {
+      void loadInView(context, url);
+      return { action: "deny" };
+    }
 
     if (isExternalProtocol(url)) {
       void openExternalUrl(context, url);
