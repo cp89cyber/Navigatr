@@ -348,8 +348,14 @@ async function getMenuViewState(electronApp) {
         hasToggleFullscreenRole: false,
         hasF11Accelerator: false,
         hasGenericToggleDevToolsRole: false,
+        hasGenericResetZoomRole: false,
+        hasGenericZoomInRole: false,
+        hasGenericZoomOutRole: false,
         hasToggleDevToolsLabel: false,
-        hasToggleAppUiDevToolsLabel: false
+        hasToggleAppUiDevToolsLabel: false,
+        hasActualSizeLabel: false,
+        hasZoomInLabel: false,
+        hasZoomOutLabel: false
       };
     }
 
@@ -357,8 +363,14 @@ async function getMenuViewState(electronApp) {
     let hasToggleFullscreenRole = false;
     let hasF11Accelerator = false;
     let hasGenericToggleDevToolsRole = false;
+    let hasGenericResetZoomRole = false;
+    let hasGenericZoomInRole = false;
+    let hasGenericZoomOutRole = false;
     let hasToggleDevToolsLabel = false;
     let hasToggleAppUiDevToolsLabel = false;
+    let hasActualSizeLabel = false;
+    let hasZoomInLabel = false;
+    let hasZoomOutLabel = false;
 
     while (queue.length > 0) {
       const item = queue.shift();
@@ -371,12 +383,30 @@ async function getMenuViewState(electronApp) {
       if (role === "toggledevtools") {
         hasGenericToggleDevToolsRole = true;
       }
+      if (role === "resetzoom") {
+        hasGenericResetZoomRole = true;
+      }
+      if (role === "zoomin") {
+        hasGenericZoomInRole = true;
+      }
+      if (role === "zoomout") {
+        hasGenericZoomOutRole = true;
+      }
 
       if (item.label === "Toggle Developer Tools") {
         hasToggleDevToolsLabel = true;
       }
       if (item.label === "Toggle App UI Developer Tools") {
         hasToggleAppUiDevToolsLabel = true;
+      }
+      if (item.label === "Actual Size") {
+        hasActualSizeLabel = true;
+      }
+      if (item.label === "Zoom In") {
+        hasZoomInLabel = true;
+      }
+      if (item.label === "Zoom Out") {
+        hasZoomOutLabel = true;
       }
 
       const accelerator =
@@ -394,8 +424,14 @@ async function getMenuViewState(electronApp) {
       hasToggleFullscreenRole,
       hasF11Accelerator,
       hasGenericToggleDevToolsRole,
+      hasGenericResetZoomRole,
+      hasGenericZoomInRole,
+      hasGenericZoomOutRole,
       hasToggleDevToolsLabel,
-      hasToggleAppUiDevToolsLabel
+      hasToggleAppUiDevToolsLabel,
+      hasActualSizeLabel,
+      hasZoomInLabel,
+      hasZoomOutLabel
     };
   });
 }
@@ -646,6 +682,101 @@ async function getReloadMenuRoutingState(electronApp) {
   });
 }
 
+async function getZoomMenuRoutingState(electronApp) {
+  return electronApp.evaluate(({ BrowserWindow, Menu }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (!win) {
+      return { hasActualSize: false, hasZoomIn: false, hasZoomOut: false, reason: "No BrowserWindow" };
+    }
+
+    const view = win.getBrowserView();
+    if (!view) {
+      return { hasActualSize: false, hasZoomIn: false, hasZoomOut: false, reason: "No BrowserView" };
+    }
+
+    const menu = Menu.getApplicationMenu();
+    if (!menu) {
+      return {
+        hasActualSize: false,
+        hasZoomIn: false,
+        hasZoomOut: false,
+        reason: "No application menu"
+      };
+    }
+
+    const queue = [...menu.items];
+    let actualSizeItem = null;
+    let zoomInItem = null;
+    let zoomOutItem = null;
+
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (!item) continue;
+
+      if (item.label === "Actual Size") {
+        actualSizeItem = item;
+      }
+      if (item.label === "Zoom In") {
+        zoomInItem = item;
+      }
+      if (item.label === "Zoom Out") {
+        zoomOutItem = item;
+      }
+
+      if (item.submenu?.items?.length) {
+        queue.push(...item.submenu.items);
+      }
+    }
+
+    if (!actualSizeItem || !zoomInItem || !zoomOutItem) {
+      return {
+        hasActualSize: Boolean(actualSizeItem),
+        hasZoomIn: Boolean(zoomInItem),
+        hasZoomOut: Boolean(zoomOutItem),
+        reason: "Missing expected zoom menu items"
+      };
+    }
+
+    const normalizeFactor = (factor) => Math.round(Number(factor) * 10000) / 10000;
+    const factors = () => ({
+      view: normalizeFactor(view.webContents.getZoomFactor()),
+      window: normalizeFactor(win.webContents.getZoomFactor())
+    });
+
+    view.webContents.setZoomFactor(1);
+    win.webContents.setZoomFactor(1);
+
+    const initialFactors = factors();
+
+    zoomInItem.click(undefined, win, undefined);
+    const afterZoomInFactors = factors();
+
+    zoomOutItem.click(undefined, win, undefined);
+    const afterZoomOutFactors = factors();
+
+    zoomInItem.click(undefined, win, undefined);
+    const beforeActualSizeFactors = factors();
+
+    actualSizeItem.click(undefined, win, undefined);
+    const afterActualSizeFactors = factors();
+
+    return {
+      hasActualSize: true,
+      hasZoomIn: true,
+      hasZoomOut: true,
+      actualSizeAccelerator:
+        typeof actualSizeItem.accelerator === "string" ? actualSizeItem.accelerator : "",
+      zoomInAccelerator: typeof zoomInItem.accelerator === "string" ? zoomInItem.accelerator : "",
+      zoomOutAccelerator: typeof zoomOutItem.accelerator === "string" ? zoomOutItem.accelerator : "",
+      initialFactors,
+      afterZoomInFactors,
+      afterZoomOutFactors,
+      beforeActualSizeFactors,
+      afterActualSizeFactors
+    };
+  });
+}
+
 async function run() {
   let fixture = null;
   let electronApp = null;
@@ -698,6 +829,21 @@ async function run() {
       "Application menu should not use generic toggledevtools role"
     );
     assert.strictEqual(
+      menuViewState.hasGenericResetZoomRole,
+      false,
+      "Application menu should not use generic resetzoom role"
+    );
+    assert.strictEqual(
+      menuViewState.hasGenericZoomInRole,
+      false,
+      "Application menu should not use generic zoomin role"
+    );
+    assert.strictEqual(
+      menuViewState.hasGenericZoomOutRole,
+      false,
+      "Application menu should not use generic zoomout role"
+    );
+    assert.strictEqual(
       menuViewState.hasToggleDevToolsLabel,
       true,
       "Application menu should include Toggle Developer Tools item"
@@ -707,7 +853,24 @@ async function run() {
       true,
       "Application menu should include Toggle App UI Developer Tools item"
     );
-    log("Menu view controls validated (fullscreen removed, explicit devtools items present)");
+    assert.strictEqual(
+      menuViewState.hasActualSizeLabel,
+      true,
+      "Application menu should include Actual Size item"
+    );
+    assert.strictEqual(
+      menuViewState.hasZoomInLabel,
+      true,
+      "Application menu should include Zoom In item"
+    );
+    assert.strictEqual(
+      menuViewState.hasZoomOutLabel,
+      true,
+      "Application menu should include Zoom Out item"
+    );
+    log(
+      "Menu view controls validated (fullscreen removed, explicit devtools and zoom items present)"
+    );
 
     const devToolsRoutingState = await getDevToolsMenuRoutingState(electronApp);
     assert.strictEqual(
@@ -787,6 +950,86 @@ async function run() {
       );
     }
     log("Reload menu routing verified (menu items and shortcuts target BrowserView)");
+
+    const zoomRoutingState = await getZoomMenuRoutingState(electronApp);
+    assert.strictEqual(
+      zoomRoutingState.hasActualSize,
+      true,
+      `Actual Size menu item should exist (${zoomRoutingState.reason || "ok"})`
+    );
+    assert.strictEqual(
+      zoomRoutingState.hasZoomIn,
+      true,
+      `Zoom In menu item should exist (${zoomRoutingState.reason || "ok"})`
+    );
+    assert.strictEqual(
+      zoomRoutingState.hasZoomOut,
+      true,
+      `Zoom Out menu item should exist (${zoomRoutingState.reason || "ok"})`
+    );
+    assert.strictEqual(
+      normalizeAcceleratorTokens(zoomRoutingState.actualSizeAccelerator),
+      normalizeAcceleratorTokens("CommandOrControl+0"),
+      "Actual Size menu item should expose Cmd/Ctrl+0 accelerator"
+    );
+    assert.strictEqual(
+      normalizeAcceleratorTokens(zoomRoutingState.zoomInAccelerator),
+      normalizeAcceleratorTokens("CommandOrControl+Plus"),
+      "Zoom In menu item should expose Cmd/Ctrl+Plus accelerator"
+    );
+    assert.strictEqual(
+      normalizeAcceleratorTokens(zoomRoutingState.zoomOutAccelerator),
+      normalizeAcceleratorTokens("CommandOrControl+-"),
+      "Zoom Out menu item should expose Cmd/Ctrl+- accelerator"
+    );
+    assert.strictEqual(
+      zoomRoutingState.initialFactors.view,
+      1,
+      "BrowserView zoom factor should start at 1 for probe"
+    );
+    assert.strictEqual(
+      zoomRoutingState.initialFactors.window,
+      1,
+      "BrowserWindow zoom factor should start at 1 for probe"
+    );
+    assert.ok(
+      zoomRoutingState.afterZoomInFactors.view > zoomRoutingState.initialFactors.view,
+      "Zoom In should increase BrowserView zoom factor"
+    );
+    assert.strictEqual(
+      zoomRoutingState.afterZoomInFactors.window,
+      1,
+      "Zoom In should not change BrowserWindow zoom factor"
+    );
+    assert.ok(
+      zoomRoutingState.afterZoomOutFactors.view < zoomRoutingState.afterZoomInFactors.view,
+      "Zoom Out should reduce BrowserView zoom factor"
+    );
+    assert.strictEqual(
+      zoomRoutingState.afterZoomOutFactors.window,
+      1,
+      "Zoom Out should not change BrowserWindow zoom factor"
+    );
+    assert.ok(
+      zoomRoutingState.beforeActualSizeFactors.view > zoomRoutingState.initialFactors.view,
+      "BrowserView zoom factor should be above 1 before Actual Size"
+    );
+    assert.strictEqual(
+      zoomRoutingState.beforeActualSizeFactors.window,
+      1,
+      "BrowserWindow zoom factor should stay locked at 1 before Actual Size"
+    );
+    assert.strictEqual(
+      zoomRoutingState.afterActualSizeFactors.view,
+      1,
+      "Actual Size should reset BrowserView zoom factor to 1"
+    );
+    assert.strictEqual(
+      zoomRoutingState.afterActualSizeFactors.window,
+      1,
+      "Actual Size should not change BrowserWindow zoom factor"
+    );
+    log("Zoom menu routing verified (menu + shortcuts mapped to BrowserView; app UI stays at 100%)");
 
     await navigateWithToolbar(window, fixture.baseUrl);
     await waitForViewUrl(
