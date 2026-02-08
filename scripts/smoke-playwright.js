@@ -170,9 +170,16 @@ async function run() {
     fixture = await startFixtureServer();
     log(`Fixture server running at ${fixture.baseUrl}`);
 
+    const appPath = path.resolve(__dirname, "..");
+    const launchArgs = [appPath];
+    if (process.env.CI) {
+      // CI runners sometimes block Chromium sandboxing/GPU init under Xvfb.
+      launchArgs.push("--no-sandbox", "--disable-gpu");
+    }
+
     electronApp = await electron.launch({
       executablePath: electronBinary,
-      args: [path.resolve(__dirname, "..")]
+      args: launchArgs
     });
 
     const window = await findRendererWindow(electronApp);
