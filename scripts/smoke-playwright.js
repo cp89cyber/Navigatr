@@ -9,6 +9,7 @@ const electronBinary = require("electron");
 const { _electron: electron } = require("playwright");
 
 const HOST = "127.0.0.1";
+const SMOKE_STARTUP_URL = "about:blank";
 const WATCHDOG_TIMEOUT_MS = readPositiveIntEnv("SMOKE_WATCHDOG_TIMEOUT_MS", 120000);
 const ELECTRON_CLOSE_TIMEOUT_MS = readPositiveIntEnv("SMOKE_ELECTRON_CLOSE_TIMEOUT_MS", 5000);
 const ELECTRON_KILL_WAIT_TIMEOUT_MS = readPositiveIntEnv(
@@ -308,6 +309,38 @@ async function waitForStatus(page, matcher, label) {
     const text = ((await page.textContent("#status")) || "").trim();
     return matcher(text) ? text : null;
   }, label, 15000, 100);
+}
+
+async function waitForUrlInputValue(page, matcher, label) {
+  return waitForCondition(async () => {
+    const value = await page.inputValue("#url");
+    return matcher(value) ? value : null;
+  }, label, 10000, 100);
+}
+
+async function emitSyntheticRendererState(electronApp, overrides = {}) {
+  return electronApp.evaluate(({ BrowserWindow }, syntheticOverrides) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (!win) return null;
+
+    const view = win.getBrowserView();
+    if (!view) return null;
+
+    const wc = view.webContents;
+    const history = wc.navigationHistory;
+    const state = {
+      url: wc.getURL(),
+      title: wc.getTitle(),
+      canGoBack: history?.canGoBack ? history.canGoBack() : wc.canGoBack(),
+      canGoForward: history?.canGoForward ? history.canGoForward() : wc.canGoForward(),
+      isLoading: wc.isLoading(),
+      status: wc.isLoading() ? "Loading..." : "Done",
+      ...syntheticOverrides
+    };
+
+    win.webContents.send("browser:state", state);
+    return state;
+  }, overrides);
 }
 
 function log(message) {
@@ -792,10 +825,17 @@ async function run() {
       launchArgs.push("--no-sandbox", "--disable-gpu");
     }
 
+    const launchEnv = {
+      ...process.env,
+      NAVIGATR_STARTUP_URL: SMOKE_STARTUP_URL
+    };
+
     electronApp = await electron.launch({
       executablePath: electronBinary,
-      args: launchArgs
+      args: launchArgs,
+      env: launchEnv
     });
+    log(`Electron launched with NAVIGATR_STARTUP_URL=${SMOKE_STARTUP_URL}`);
 
     const window = await findRendererWindow(electronApp);
     await window.waitForSelector("#toolbar", { timeout: 5000 });
@@ -1030,6 +1070,43 @@ async function run() {
       "Actual Size should not change BrowserWindow zoom factor"
     );
     log("Zoom menu routing verified (menu + shortcuts mapped to BrowserView; app UI stays at 100%)");
+
+    const editLockSentinel = "typed-user-input-should-stay";
+    await window.click("#url");
+    await window.fill("#url", editLockSentinel);
+    await waitForUrlInputValue(
+      window,
+      (value) => value === editLockSentinel,
+      "seeded URL input sentinel value"
+    );
+
+    const whileEditingState = await emitSyntheticRendererState(electronApp, {
+      url: "https://editing-state-update.invalid/"
+    });
+    assert.ok(whileEditingState, "Synthetic renderer state should be emitted while editing");
+    await waitForUrlInputValue(
+      window,
+      (value) => value === editLockSentinel,
+      "URL input preserved while focused/editing"
+    );
+
+    await window.evaluate(() => {
+      const input = document.getElementById("url");
+      if (input instanceof HTMLInputElement) {
+        input.blur();
+      }
+    });
+
+    const afterBlurState = await emitSyntheticRendererState(electronApp, {
+      url: "https://after-blur-state-update.invalid/"
+    });
+    assert.ok(afterBlurState, "Synthetic renderer state should be emitted after blur");
+    await waitForUrlInputValue(
+      window,
+      (value) => value === afterBlurState.url,
+      "URL input syncs after editing ends"
+    );
+    log("URL input state-sync behavior verified (locked while editing, synced after blur)");
 
     await navigateWithToolbar(window, fixture.baseUrl);
     await waitForViewUrl(

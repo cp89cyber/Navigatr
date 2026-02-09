@@ -11,6 +11,7 @@ const browserBridge = window.browser;
 let unsubscribeState = null;
 let unsubscribeAdblock = null;
 let resizeTimer = null;
+let isEditingUrl = false;
 
 function setControlsEnabled(enabled) {
   backBtn.disabled = !enabled;
@@ -30,7 +31,7 @@ function applyState(state) {
   forwardBtn.disabled = !state.canGoForward;
   setStatus(state.status || (state.isLoading ? "Loading..." : "Ready"));
 
-  if (state.url) {
+  if (state.url && !isEditingUrl) {
     urlInput.value = state.url;
   }
 
@@ -140,8 +141,21 @@ reloadBtn.addEventListener("click", () => {
 urlInput.addEventListener("keydown", (event) => {
   if (!browserBridge) return;
   if (event.key === "Enter") {
+    isEditingUrl = false;
     browserBridge.navigate(urlInput.value).catch(showBridgeError);
   }
+});
+
+urlInput.addEventListener("focus", () => {
+  isEditingUrl = true;
+});
+
+urlInput.addEventListener("input", () => {
+  isEditingUrl = true;
+});
+
+urlInput.addEventListener("blur", () => {
+  isEditingUrl = false;
 });
 
 window.addEventListener("resize", () => {

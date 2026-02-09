@@ -91,7 +91,9 @@ function setupAdblock() {
   });
 }
 
-const DEFAULT_URL = "https://duckduckgo.com";
+const PRODUCT_DEFAULT_URL = "https://duckduckgo.com";
+const STARTUP_URL_ENV_VAR = "NAVIGATR_STARTUP_URL";
+const DEFAULT_URL = resolveStartupUrl(process.env[STARTUP_URL_ENV_VAR]);
 const SEARCH_URL = "https://duckduckgo.com/?q=";
 const REPO_BASE_URL = "https://github.com/cp89cyber/Navigatr";
 const RELOAD_ACCELERATORS = Object.freeze({
@@ -125,6 +127,32 @@ const AUTHORITY_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
 const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 const INTERNAL_SCHEMES = new Set(["http", "https", "about", "blob", "data"]);
 const NON_AUTHORITY_EXTERNAL_SCHEMES = new Set(["mailto", "tel", "sms"]);
+
+function resolveStartupUrl(rawStartupUrl) {
+  if (typeof rawStartupUrl !== "string") {
+    return PRODUCT_DEFAULT_URL;
+  }
+
+  const candidate = rawStartupUrl.trim();
+  if (!candidate) {
+    return PRODUCT_DEFAULT_URL;
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol === "about:") {
+      return parsed.href === "about:blank" ? "about:blank" : PRODUCT_DEFAULT_URL;
+    }
+
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return PRODUCT_DEFAULT_URL;
+    }
+
+    return parsed.href;
+  } catch {
+    return PRODUCT_DEFAULT_URL;
+  }
+}
 
 function openHelpLink(targetUrl) {
   if (!targetUrl) return;
