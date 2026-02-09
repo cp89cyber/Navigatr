@@ -91,7 +91,7 @@ function setupAdblock() {
   });
 }
 
-const DEFAULT_URL = "https://example.com";
+const DEFAULT_URL = "https://duckduckgo.com";
 const SEARCH_URL = "https://duckduckgo.com/?q=";
 const REPO_BASE_URL = "https://github.com/cp89cyber/Navigatr";
 const RELOAD_ACCELERATORS = Object.freeze({
