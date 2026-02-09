@@ -1,13 +1,15 @@
-name: CodeQL
+name: CodeQL (Advanced - Manual)
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
-  schedule:
-    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      confirm_default_setup_disabled:
+        description: "Set to true only after GitHub CodeQL default setup is disabled."
+        required: true
+        type: boolean
+        default: false
 jobs:
   analyze:
+    if: ${{ github.event.inputs.confirm_default_setup_disabled == 'true' }}
     name: Analyze
     runs-on: ubuntu-latest
     permissions:
