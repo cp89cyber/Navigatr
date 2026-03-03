@@ -14,7 +14,7 @@ transforms:
     - taskgraph.transforms.task:transforms
 
 job-template:
-    description: Sign Reference Browser
+    description: Sign navigatr
     index:
         by-build-type:
             (nightly):

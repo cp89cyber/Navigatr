@@ -160,7 +160,7 @@ class ToolbarIntegration(
             },
             TextMenuCandidate(text = "Report issue") {
                 tabsUseCases.addTab(
-                    url = "https://github.com/mozilla-mobile/reference-browser/issues/new",
+                    url = "https://github.com/cp89cyber/navigatr/issues/new",
                 )
             },
             TextMenuCandidate(text = "Settings") {

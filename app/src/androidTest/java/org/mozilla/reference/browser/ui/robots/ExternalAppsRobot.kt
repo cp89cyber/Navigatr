@@ -19,7 +19,7 @@ import org.mozilla.reference.browser.helpers.TestAssetHelper.waitingTimeShort
 import org.mozilla.reference.browser.helpers.TestHelper.packageName
 
 /**
- * Implementation of Robot Pattern for any non-Reference Browser (external) apps.
+ * Implementation of Robot Pattern for any non-navigatr (external) apps.
  */
 class ExternalAppsRobot {
     fun verifyAndroidDefaultApps() = assertDefaultAppsLayout()

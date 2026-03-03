@@ -12,7 +12,7 @@ transforms:
     - taskgraph.transforms.task:transforms
 
 task-defaults:
-    description: Build Reference Browser from source code.
+    description: Build navigatr from source code.
     treeherder:
         kind: build
         symbol: bump(a-c)

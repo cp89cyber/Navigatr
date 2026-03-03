@@ -3,7 +3,7 @@
    - License, v. 2.0. If a copy of the MPL was not distributed with this
    - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
 <resources>
-    <string name="app_name">Reference Browser</string>
+    <string name="app_name">navigatr</string>
 
     <!-- Text shown in the toolbar if it is empty -->
     <string name="toolbar_hint">Search or enter address</string>
@@ -54,7 +54,7 @@
     <string name="preferences_global_privacy_control">Tell websites not to share &amp; sell data</string>
 
     <!-- Preference about page -->
-    <string name="preferences_about_page">About Reference Browser</string>
+    <string name="preferences_about_page">About navigatr</string>
 
     <!-- Preference for signing in -->
     <string name="sign_in">Sign in</string>
@@ -145,7 +145,7 @@
     <string name="private_browsing_title">Private Browsing</string>
     <string name="private_browsing_body"><![CDATA[
 <h1>Private Browsing</h1>
-<p>When you browse in a Private Window, Reference Browser <strong>does not save</strong>:</p>
+<p>When you browse in a Private Window, navigatr <strong>does not save</strong>:</p>
 <ul class="two-column">
     <li>visited pages</li>
     <li>searches</li>
@@ -157,10 +157,10 @@
      ]]></string>
 
     <!-- Title of the notification shown on app startup informing about the data policy -->
-    <string name="datareporting_notification_title">Reference Browser</string>
+    <string name="datareporting_notification_title">navigatr</string>
 
     <!-- Summary of the notification shown on app startup informing about the data policy -->
-    <string name="datareporting_notification_summary">To improve your experience, Reference Browser automatically sends some information to Mozilla.</string>
+    <string name="datareporting_notification_summary">To improve your experience, navigatr automatically sends some information to Mozilla.</string>
     
     <string name="default_notification_channel">Browser</string>
 

@@ -19,4 +19,4 @@ assignees: ''
 ### Device information
 
 * Android device: ?
-* Reference Browser version: ?
+* navigatr version: ?

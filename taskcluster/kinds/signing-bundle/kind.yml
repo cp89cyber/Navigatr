@@ -14,7 +14,7 @@ transforms:
     - taskgraph.transforms.task:transforms
 
 job-template:
-    description: Sign Reference Browser AAB
+    description: Sign navigatr AAB
     treeherder:
         kind: build
         symbol: S-AAB

@@ -14,7 +14,7 @@ kind-dependencies:
 
 
 task-defaults:
-    description: Test Reference Browser
+    description: Test navigatr
     fetches:
         toolchain:
             - android-sdk-linux

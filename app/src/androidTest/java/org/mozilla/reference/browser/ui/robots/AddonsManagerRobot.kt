@@ -79,7 +79,7 @@ class AddonsManagerRobot {
     fun dismissAddonDownloadCompletedPrompt(addonName: String) {
         mDevice.waitForWindowUpdate(packageName, waitingTime)
         mDevice
-            .findObject(UiSelector().text("$addonName has been added to Reference Browser"))
+            .findObject(UiSelector().text("$addonName has been added to navigatr"))
             .waitForExists(waitingTime)
         mDevice.waitAndInteract(
             Until.findObject(

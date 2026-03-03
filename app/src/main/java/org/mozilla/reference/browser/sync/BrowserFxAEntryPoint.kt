@@ -7,7 +7,7 @@ package org.mozilla.reference.browser.sync
 import mozilla.components.concept.sync.FxAEntryPoint
 
 /**
- * Reference Browser implementation of [FxAEntryPoint].
+ * navigatr implementation of [FxAEntryPoint].
  */
 enum class BrowserFxAEntryPoint(
     override val entryName: String,
